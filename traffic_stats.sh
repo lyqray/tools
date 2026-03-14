@@ -44,19 +44,33 @@ get_hw_realtime() {
     for iface in /sys/class/net/*; do
         ifname=$(basename "$iface")
         if [[ ! "$ifname" =~ $EXCLUDE_IFACES ]]; then
-            rx_sum=$((rx_sum + $(cat "$iface/statistics/rx_bytes" 2>/dev/null || echo 0)))
-            tx_sum=$((tx_sum + $(cat "$iface/statistics/tx_bytes" 2>/dev/null || echo 0)))
+            [ -f "$iface/statistics/rx_bytes" ] && rx_sum=$((rx_sum + $(cat "$iface/statistics/rx_bytes")))
+            [ -f "$iface/statistics/tx_bytes" ] && tx_sum=$((tx_sum + $(cat "$iface/statistics/tx_bytes")))
         fi
     done
     echo "$rx_sum $tx_sum"
 }
 
-# 计算结束日期
+# --- 核心修正：手动计算月份加法，不依赖系统 date 的加减功能 ---
 get_next_reset_date() {
-    local start=$1
+    local start_date=$1
     local interval=$2
-    date -d "$start + $interval month" +%Y-%m-%d 2>/dev/null || \
-    date -v+${interval}m -j -f "%Y-%m-%d" "$start" +%Y-%m-%d
+
+    local y=$(echo $start_date | cut -d- -f1)
+    local m=$(echo $start_date | cut -d- -f2 | sed 's/^0//')
+    local d=$(echo $start_date | cut -d- -f3)
+
+    # 计算新月份
+    local new_m=$((m + interval))
+    local new_y=$y
+
+    while [ $new_m -gt 12 ]; do
+        new_y=$((new_y + 1))
+        new_m=$((new_m - 12))
+    done
+
+    # 格式化输出 YYYY-MM-DD
+    printf "%04d-%02d-%02d" $new_y $new_m $d
 }
 
 # --- 核心业务逻辑 ---
@@ -71,19 +85,14 @@ update_stats() {
     local last_hw_tx=$(get_val "LAST_HW_TX")
 
     local end_date=$(get_next_reset_date "$start_date" "$interval")
-    local today=$(date +%Y-%m-%d)
     
-    # 提取重置日（从开始日期中提取）
-    local r_day=$(echo $start_date | cut -d- -f3 | sed 's/^0//')
+    # 兼容 BusyBox 的日期比较：转成 YYYYMMDD 数字进行比较
+    local today_num=$(date +%Y%m%d)
+    local end_num=$(echo $end_date | tr -d '-')
 
-    # 1. 检查重置逻辑
-    local today_s=$(date -d "$today" +%s)
-    local end_s=$(date -d "$end_date" +%s)
-
-    if [ "$today_s" -ge "$end_s" ]; then
+    if [ "$today_num" -ge "$end_num" ]; then
         if [ ! -f "/tmp/traffic_reset.flag" ]; then
             cur_acc_rx=0; cur_acc_tx=0
-            # 自动进入下一个周期
             start_date="$end_date"
             end_date=$(get_next_reset_date "$start_date" "$interval")
             touch "/tmp/traffic_reset.flag"
@@ -92,15 +101,16 @@ update_stats() {
         rm -f "/tmp/traffic_reset.flag"
     fi
 
-    # 2. 计算硬件增量 (包含首次运行逻辑)
+    # 提取重置日用于显示
+    local r_day=$(echo $start_date | cut -d- -f3 | sed 's/^0//')
+
+    # 计算硬件增量
     read hw_now_rx hw_now_tx <<< $(get_hw_realtime)
     
-    # 如果是首次运行（LAST_HW 为 0），则将当前硬件流量全部计入 CUR
     if [ "$last_hw_rx" -eq 0 ] && [ "$last_hw_tx" -eq 0 ]; then
         cur_acc_rx=$hw_now_rx
         cur_acc_tx=$hw_now_tx
     else
-        # 正常增量计算，处理重启清零
         local diff_rx=0; local diff_tx=0
         if [ "$hw_now_rx" -lt "$last_hw_rx" ]; then diff_rx=$hw_now_rx; else diff_rx=$((hw_now_rx - last_hw_rx)); fi
         if [ "$hw_now_tx" -lt "$last_hw_tx" ]; then diff_tx=$hw_now_tx; else diff_tx=$((hw_now_tx - last_hw_tx)); fi
@@ -108,7 +118,7 @@ update_stats() {
         cur_acc_tx=$((cur_acc_tx + diff_tx))
     fi
 
-    # 3. 写入文件 (更新了人类直观阅读区的显示逻辑)
+    # 写入文件
     cat > "$DB_FILE" <<EOF
 # --- 脚本配置数据 (请勿手动修改) ---
 START_DATE=$start_date
@@ -157,8 +167,8 @@ else
             read -p "请输入统计起始日期 (YYYY-MM-DD): " sd
             read -p "请输入重置间隔月数 (例如 1): " im
             
-            if date -d "$sd" +%Y-%m-%d >/dev/null 2>&1 && [[ "$im" =~ ^[0-9]+$ ]]; then
-                # 重置文件数据，强制触发首次全量抓取逻辑
+            # 简单的正则校验日期格式 YYYY-MM-DD
+            if [[ "$sd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$im" =~ ^[0-9]+$ ]]; then
                 cat > "$DB_FILE" <<EOF
 # --- 脚本配置数据 (请勿手动修改) ---
 START_DATE=$sd
@@ -171,7 +181,7 @@ EOF
                 update_stats
                 echo "设置成功！周期已对齐至每月 $(echo $sd | cut -d- -f3 | sed 's/^0//') 号。"
             else
-                echo "错误：日期或周期无效。"
+                echo "错误：输入格式有误。日期请严格按照 YYYY-MM-DD 格式。"
             fi
             ;;
         3) setup_cron ;;
