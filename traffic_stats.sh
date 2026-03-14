@@ -57,8 +57,9 @@ get_next_reset_date() {
     local interval=$2
 
     local y=$(echo $start_date | cut -d- -f1)
+    # 核心修复：使用 sed 去掉前导 0，防止被识别为八进制
     local m=$(echo $start_date | cut -d- -f2 | sed 's/^0//')
-    local d=$(echo $start_date | cut -d- -f3)
+    local d=$(echo $start_date | cut -d- -f3 | sed 's/^0//')
 
     # 计算新月份
     local new_m=$((m + interval))
@@ -70,6 +71,7 @@ get_next_reset_date() {
     done
 
     # 格式化输出 YYYY-MM-DD
+    # 这里的 printf 接收的是去掉 0 后的数字，然后再通过 %02d 补齐
     printf "%04d-%02d-%02d" $new_y $new_m $d
 }
 
