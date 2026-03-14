@@ -72,8 +72,11 @@ update_stats() {
 
     local end_date=$(get_next_reset_date "$start_date" "$interval")
     local today=$(date +%Y-%m-%d)
+    
+    # 提取重置日（从开始日期中提取）
+    local r_day=$(echo $start_date | cut -d- -f3 | sed 's/^0//')
 
-    # 1. 检查重置逻辑 (比较当前日期和预定结束日期)
+    # 1. 检查重置逻辑
     local today_s=$(date -d "$today" +%s)
     local end_s=$(date -d "$end_date" +%s)
 
@@ -105,7 +108,7 @@ update_stats() {
         cur_acc_tx=$((cur_acc_tx + diff_tx))
     fi
 
-    # 3. 写入文件
+    # 3. 写入文件 (更新了人类直观阅读区的显示逻辑)
     cat > "$DB_FILE" <<EOF
 # --- 脚本配置数据 (请勿手动修改) ---
 START_DATE=$start_date
@@ -117,7 +120,7 @@ LAST_HW_TX=$hw_now_tx
 
 # --- 人类直观阅读区 ---
 # 最后更新时间: $(date "+%Y-%m-%d %H:%M:%S")
-# 统计周期: 每 $interval 个月重置一次
+# 统计周期: 每 $interval 个月 $r_day 号重置一次
 $start_date 至 $end_date 的流量情况为：
 上行流量 (TX): $(format_size $cur_acc_tx)
 下行流量 (RX): $(format_size $cur_acc_rx)
@@ -138,7 +141,7 @@ if [ "$1" == "cron" ]; then
     update_stats
 else
     echo "======================================"
-    echo "       Linux 流量统计助手 (完整版)"
+    echo "       Linux 流量统计助手 (完善版)"
     echo "======================================"
     echo "1) 查看当前流量统计"
     echo "2) 设置统计起始日期与周期"
@@ -165,8 +168,8 @@ CUR_TX=0
 LAST_HW_RX=0
 LAST_HW_TX=0
 EOF
-                update_stats # 立即执行一次抓取
-                echo "设置成功！当前网卡流量已作为初始数据计入周期。"
+                update_stats
+                echo "设置成功！周期已对齐至每月 $(echo $sd | cut -d- -f3 | sed 's/^0//') 号。"
             else
                 echo "错误：日期或周期无效。"
             fi
