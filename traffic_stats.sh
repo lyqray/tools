@@ -16,10 +16,10 @@ init_db() {
         echo "# --- 脚本配置数据 (请勿手动修改) ---" > "$DB_FILE"
         echo "START_DATE=$(date +%Y-%m-%d)" >> "$DB_FILE"
         echo "INTERVAL_MONTHS=1" >> "$DB_FILE"
-        echo "CUR_RX=0" >> "$DB_FILE"
         echo "CUR_TX=0" >> "$DB_FILE"
-        echo "LAST_HW_RX=0" >> "$DB_FILE"
+        echo "CUR_RX=0" >> "$DB_FILE"
         echo "LAST_HW_TX=0" >> "$DB_FILE"
+        echo "LAST_HW_RX=0" >> "$DB_FILE"
         echo -e "\n# --- 人类直观阅读区 ---" >> "$DB_FILE"
     fi
 }
@@ -81,20 +81,20 @@ update_stats() {
     init_db
     local start_date=$(get_val "START_DATE")
     local interval=$(get_val "INTERVAL_MONTHS")
-    local cur_acc_rx=$(get_val "CUR_RX")
     local cur_acc_tx=$(get_val "CUR_TX")
-    local last_hw_rx=$(get_val "LAST_HW_RX")
+    local cur_acc_rx=$(get_val "CUR_RX")
     local last_hw_tx=$(get_val "LAST_HW_TX")
+    local last_hw_rx=$(get_val "LAST_HW_RX")
 
     local end_date=$(get_next_reset_date "$start_date" "$interval")
-    
+
     # 兼容 BusyBox 的日期比较：转成 YYYYMMDD 数字进行比较
     local today_num=$(date +%Y%m%d)
     local end_num=$(echo $end_date | tr -d '-')
 
     if [ "$today_num" -ge "$end_num" ]; then
         if [ ! -f "/tmp/traffic_reset.flag" ]; then
-            cur_acc_rx=0; cur_acc_tx=0
+            cur_acc_tx=0; cur_acc_rx=0
             start_date="$end_date"
             end_date=$(get_next_reset_date "$start_date" "$interval")
             touch "/tmp/traffic_reset.flag"
@@ -125,13 +125,13 @@ update_stats() {
 # --- 脚本配置数据 (请勿手动修改) ---
 START_DATE=$start_date
 INTERVAL_MONTHS=$interval
-CUR_RX=$cur_acc_rx
 CUR_TX=$cur_acc_tx
-LAST_HW_RX=$hw_now_rx
+CUR_RX=$cur_acc_rx
 LAST_HW_TX=$hw_now_tx
+LAST_HW_RX=$hw_now_rx
 
 # --- 人类直观阅读区 ---
-# 最后更新时间: $(date "+%Y-%m-%d %H:%M:%S")
+# 最后更新时间: $(TZ='Asia/Hong_Kong' date "+%Y-%m-%d %H:%M:%S (%Z/HKT)")
 # 统计周期: 每 $interval 个月 $r_day 号重置一次
 $start_date 至 $end_date 的流量情况为：
 上行流量 (TX): $(format_size $cur_acc_tx)
@@ -157,10 +157,11 @@ else
     echo "======================================"
     echo "1) 查看当前流量统计"
     echo "2) 设置统计起始日期与周期"
-    echo "3) 添加定时统计任务 (Crontab)"
+    echo "3) 手动调整当前已用流量"
+    echo "4) 添加定时统计任务 (Crontab)"
     echo "q) 退出"
     echo "--------------------------------------"
-    read -p "请选择操作 [1-3]: " opt
+    read -p "请选择操作 [1-4]: " opt
 
     case $opt in
         1) update_stats; sed -n '/人类直观阅读区/,$p' "$DB_FILE" ;;
@@ -168,25 +169,51 @@ else
             echo "当前系统日期: $(date +%Y-%m-%d)"
             read -p "请输入统计起始日期 (YYYY-MM-DD): " sd
             read -p "请输入重置间隔月数 (例如 1): " im
-            
+
             # 简单的正则校验日期格式 YYYY-MM-DD
             if [[ "$sd" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$im" =~ ^[0-9]+$ ]]; then
                 cat > "$DB_FILE" <<EOF
 # --- 脚本配置数据 (请勿手动修改) ---
 START_DATE=$sd
 INTERVAL_MONTHS=$im
-CUR_RX=0
 CUR_TX=0
-LAST_HW_RX=0
+CUR_RX=0
 LAST_HW_TX=0
+LAST_HW_RX=0
 EOF
                 update_stats
                 echo "设置成功！周期已对齐至每月 $(echo $sd | cut -d- -f3 | sed 's/^0//') 号。"
             else
-                echo "错误：输入格式有误。日期请严格按照 YYYY-MM-DD 格式。"
+                echo "错误：输入格式有误。"
             fi
             ;;
-        3) setup_cron ;;
+        3)
+            init_db
+            read -p "请输入当前已用上行流量 (TX) (例如 10G 或 500M): " input_tx
+            read -p "请输入当前已用下行流量 (RX) (例如 10G 或 500M): " input_rx
+            to_bytes() {
+                local val=$(echo $1 | tr -d ' ')
+                local num=$(echo $val | grep -oE '^[0-9.]+')
+                local unit=$(echo $val | grep -oE '[a-zA-Z]+' | tr '[:lower:]' '[:upper:]')
+                if [[ "$unit" == "G"* ]]; then echo "$num" | awk '{printf "%.0f", $1 * 1024 * 1024 * 1024}';
+                elif [[ "$unit" == "M"* ]]; then echo "$num" | awk '{printf "%.0f", $1 * 1024 * 1024}';
+                else echo "$num"; fi
+            }
+            tx_bytes=$(to_bytes "$input_tx")
+            rx_bytes=$(to_bytes "$input_rx")
+            if [[ -n "$tx_bytes" && -n "$rx_bytes" ]]; then
+                read hw_now_rx hw_now_tx <<< $(get_hw_realtime)
+                sed -i "s/^CUR_TX=.*/CUR_TX=$tx_bytes/" "$DB_FILE"
+                sed -i "s/^CUR_RX=.*/CUR_RX=$rx_bytes/" "$DB_FILE"
+                sed -i "s/^LAST_HW_TX=.*/LAST_HW_TX=$hw_now_tx/" "$DB_FILE"
+                sed -i "s/^LAST_HW_RX=.*/LAST_HW_RX=$hw_now_rx/" "$DB_FILE"
+                update_stats
+                echo "流量已手动更新！"
+            else
+                echo "输入格式错误。"
+            fi
+            ;;
+        4) setup_cron ;;
         *) exit 0 ;;
     esac
 fi
